@@ -37,7 +37,7 @@ TOOLS = [{
     },
 }]
 
-# -- Tool executin ---
+# -- Tool execution ---
 def run_bash(command: str) -> str:
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
     if any(d in command for d in dangerous):
