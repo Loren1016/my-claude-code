@@ -25,9 +25,13 @@ if os.getenv("ANTHROPIC_BASE_URL"):
 client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
 MODEL = os.environ["MODEL_ID"]
 WORKDIR = Path.cwd()
+CURRENT_TODOS: list[dict] = []
 
-SYSTEM = f"You are a coding agent at {WORKDIR} on Windows (cmd.exe shell). Use tools to solve tasks. Act, don't explain."
-
+SYSTEM = (
+    f"You are a coding agent at {WORKDIR}."
+    "Before starting any multi-step task, use todo_write to plan your step."
+    "Update status as you go."
+)
 # -- Tools Execution ---
 
 # -- run bash ---
@@ -98,6 +102,25 @@ def run_glob(pattern: str) -> str:
         return f"Error: {e}"
 
 
+# -- run write todo ---
+def run_todo_write(todos: list) -> str:
+    global CURRENT_TODOS
+    # validate required fields
+    for i, t in enumerate(todos):
+        if "content" not in t or "status" not in t:
+            return f"Error: todos[{i}] missing 'content' or 'status'"
+        if t["status"] not in ("pending", "in_progress", "completed"):
+            return f"Error: todos[{i}] has invalid status '{t['status']}'"
+    CURRENT_TODOS = todos
+    lines = ["\n\033[33m## Current Tasks\033[0m"]
+    for t in CURRENT_TODOS:
+        icon = {"pending": " ", "in_progress": "\033[36m▸\033[0m", "completed": "\033[32m✓\033[0m"}[t["status"]]
+        lines.append(f"  [{icon}] {t['content']}")
+    print("\n".join(lines))
+    return f"Updated {len(CURRENT_TODOS)} tasks"
+
+
+
 # -- Tool Defination ---
 TOOLS = [
     {"name": "bash", "description": "Run a shell command.",
@@ -110,6 +133,9 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]}},
     {"name": "glob", "description": "Find files matching a glob pattern.",
      "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}},
+     {"name": "todo_write", "description": "Create and manage a task list for your current coding session.",
+     "input_schema": {"type": "object", "properties": {"todos": {"type": "array", "items": {"type": "object", "properties": {"content": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}}, "required": ["content", "status"]}}}, "required": ["todos"]}},
+
 ]
 
 
@@ -119,6 +145,7 @@ TOOL_HANDLERS = {
     "write_file": run_write,
     "edit_file": run_edit, 
     "glob": run_glob,
+    "todo_write": run_todo_write,
 }
 
 
@@ -200,9 +227,17 @@ register_hook("PostToolUse", large_output_hook)
 register_hook("Stop", summary_hook)
 
 
+rounds_since_todo = 0
+
 # -- agent loop ---
 def agent_loop(messages: list):
+    global rounds_since_todo
     while True:
+        if rounds_since_todo >= 3 and messages:
+            messages.append({"role": "user",
+                             "content": "<reminder>Update your todos.</reminder>"})
+            rounds_since_todo = 0
+
         response = client.messages.create(
             model=MODEL, system=SYSTEM, messages=messages,
             tools=TOOLS, max_tokens=10000,
